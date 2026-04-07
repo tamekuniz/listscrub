@@ -5,6 +5,26 @@ A collection of Python scripts for processing email distribution lists.
 
 ---
 
+## フォルダ構成 / Folder Structure
+
+```
+listscrub/
+├── 00_Program/          # スクリプト本体 / Scripts
+│   ├── common.py        # 共通ユーティリティ / Shared utilities
+│   ├── ab_match.py      # 2ファイル突合 / A-B Matching
+│   ├── dedup_csv.py     # 重複除去 / Deduplication
+│   ├── filter_lines.py  # 行フィルタ / Line Filter
+│   └── reorder_columns.py # カラム並べ替え / Column Reorder
+├── IN/                  # 入力ファイルをここに置く / Place input files here
+└── OUT/                 # 出力先（実行時に自動生成）/ Output (auto-created on run)
+```
+
+各スクリプトは `IN/` フォルダから入力を読み込み、`OUT/タイムスタンプ_ツール名/` に結果を出力します。
+結果フォルダには `input/` サブフォルダに元ファイルのコピーも含まれます。
+Each script reads from `IN/` and writes to `OUT/<timestamp>_<tool>/`, including a copy of the original input files.
+
+---
+
 ## ツール一覧 / Tools
 
 ### `ab_match.py` — 2ファイル突合 / A-B Matching
@@ -12,8 +32,12 @@ A collection of Python scripts for processing email distribution lists.
 2つのCSV/TSVを比較して、共通行・差分行をそれぞれ出力します。
 Compares two CSV/TSV files and outputs intersection and differences.
 
-```
-python ab_match.py --a list_a.csv --b list_b.csv
+```bash
+# 基本（行全体で突合）
+python3 00_Program/ab_match.py IN/list_a.csv IN/list_b.csv
+
+# キー列を指定して突合
+python3 00_Program/ab_match.py IN/list_a.csv email IN/list_b.csv メールアドレス
 ```
 
 出力 / Output:
@@ -21,11 +45,10 @@ python ab_match.py --a list_a.csv --b list_b.csv
 - `only_a_NAME_N.csv` — A\B（Aだけに存在 / Only in A）
 - `only_b_NAME_N.csv` — B\A（Bだけに存在 / Only in B）
 
-主なオプション / Options:
+オプション / Options:
 | オプション | 説明 |
 |---|---|
 | `--header-a`, `--header-b` | ヘッダ有無 `yes`/`no`（default: yes） |
-| `--key-a`, `--key-b` | キー列名（header=yes 時） |
 | `--key-index-a`, `--key-index-b` | キー列番号（header=no 時、1始まり） |
 | `--delimiter-a`, `--delimiter-b` | 区切り文字 `auto`/`tab`/`comma`/`semicolon` |
 
@@ -36,21 +59,26 @@ python ab_match.py --a list_a.csv --b list_b.csv
 CSV/TSVまたはテキストファイルから重複行を除去します。
 Removes duplicate rows from CSV/TSV or plain text files.
 
-```
-python dedup_csv.py --file list.csv
-python dedup_csv.py --file list.txt --line
+```bash
+# テキストモード（改行区切り）
+python3 00_Program/dedup_csv.py IN/list.txt --line
+
+# CSVモード（キー列指定）
+python3 00_Program/dedup_csv.py IN/list.csv メールアドレス
+
+# CSVモード（キーなし）
+python3 00_Program/dedup_csv.py IN/list.csv
 ```
 
 出力 / Output:
 - `00_dedup_NAME_N.csv` — ユニーク行 / Unique rows
 - `01_dedup_dropped_NAME_N.csv` — 重複として除去した行 / Dropped duplicates
 
-主なオプション / Options:
+オプション / Options:
 | オプション | 説明 |
 |---|---|
 | `--line` | 改行区切りテキストとして処理（`.txt`向け） |
 | `--header` | ヘッダ有無 `yes`/`no`（default: no） |
-| `--key` | キー列名（header=yes 時） |
 | `--key-index` | キー列番号（header=no 時、1始まり） |
 | `--delimiter` | 区切り文字 `auto`/`tab`/`comma`/`semicolon` |
 
@@ -61,8 +89,8 @@ python dedup_csv.py --file list.txt --line
 指定文字列を含む行と含まない行に分離します（重複除去なし）。
 Splits lines into those containing a specified string and those that don't (no dedup).
 
-```
-python filter_lines.py --file list.txt --exclude "@example.com"
+```bash
+python3 00_Program/filter_lines.py IN/list.txt "@example.com"
 ```
 
 出力 / Output:
@@ -71,19 +99,23 @@ python filter_lines.py --file list.txt --exclude "@example.com"
 
 ---
 
-## フォルダ構成 / Folder Structure
+### `reorder_columns.py` — カラム並べ替え / Column Reorder
 
-```
-listscrub/
-├── IN/              # 入力ファイルをここに置く / Place input files here
-├── OUT/             # 出力先（実行時に自動生成）/ Output (auto-created on run)
-├── ab_match.py
-├── dedup_csv.py
-└── filter_lines.py
+CSVのカラム順をテンプレートに合わせて並べ替えます。
+Reorders CSV columns to match a header template.
+
+```bash
+python3 00_Program/reorder_columns.py IN/data.csv IN/template.csv
 ```
 
-各スクリプトは `IN/` フォルダから入力を読み込み、`OUT/タイムスタンプ_ツール名/` に結果を出力します。
-Each script reads from the `IN/` folder and writes results to `OUT/<timestamp>_<tool>/`.
+出力 / Output:
+- `reordered_NAME_N.csv` — カラム並べ替え済みデータ / Data with reordered columns
+
+オプション / Options:
+| オプション | 説明 |
+|---|---|
+| `--delimiter-a` | データファイルの区切り文字 `auto`/`tab`/`comma`/`semicolon` |
+| `--delimiter-b` | テンプレートファイルの区切り文字 `auto`/`tab`/`comma`/`semicolon` |
 
 ---
 

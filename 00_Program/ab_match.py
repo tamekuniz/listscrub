@@ -1,43 +1,23 @@
 #!/usr/bin/env python3
+"""AB Match: 2つのファイルを突合して共通/差分を出力する"""
 import argparse
 import csv
-import re
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, List, Dict, Any
 
-
-def jst_timestamp() -> str:
-    jst = timezone(timedelta(hours=9))
-    return datetime.now(jst).strftime("%Y-%m-%d_%H-%M-%S")
-
-
-def sanitize_stem(name: str) -> str:
-    name = name.strip()
-    name = name.replace(" ", "_")
-    name = re.sub(r"[^\w\.\-\+]+", "", name)  # 英数/_/./-/+ 以外を落とす
-    name = name.strip("._-")
-    return name or "file"
-
-
-def sniff_delimiter(path: Path) -> str:
-    sample = path.read_bytes()[:8192].decode("utf-8-sig", errors="replace")
-    candidates = ["\t", ",", ";"]
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=candidates)
-        return dialect.delimiter
-    except Exception:
-        return ","
-
-
-def norm_key(s: Optional[str]) -> str:
-    if s is None:
-        return ""
-    return s.strip().strip('"').strip("'").lower()
+from common import (
+    jst_timestamp,
+    sanitize_stem,
+    norm_key,
+    resolve_delimiter,
+    delimiter_label,
+    resolve_input_file,
+    setup_output_dir,
+    copy_input_files,
+)
 
 
 def make_row_key_from_dict(row: Dict[str, Any], delimiter: str) -> str:
-    # DictReader の row は dict。順序は fieldnames の順で作られる前提で values() を使う。
     vals = []
     for v in row.values():
         if v is None:
@@ -83,12 +63,10 @@ def read_csv_dedup_first_row(
             if not fieldnames:
                 raise ValueError(f"{path.name}: header指定やのにヘッダが見つからへん")
 
-            # キー指定あり（ただし 1列なら省略可）
             use_row_key = False
             key_col_use: Optional[str] = None
 
             if len(fieldnames) == 1:
-                # 1列ファイルはキー指定なくてもその列で突合できる
                 key_col_use = key_col or fieldnames[0]
                 key_mode = "column:{}".format(key_col_use)
             else:
@@ -98,7 +76,6 @@ def read_csv_dedup_first_row(
                     key_col_use = key_col
                     key_mode = "column:{}".format(key_col_use)
                 else:
-                    # ★ キー指定なし → 行全体で突合
                     use_row_key = True
                     key_mode = "row"
 
@@ -110,7 +87,6 @@ def read_csv_dedup_first_row(
                     k = norm_key(row.get(key_col_use))  # type: ignore[arg-type]
 
                 if not k:
-                    # 空キーは突合キーとして扱えへんのでスキップ
                     continue
                 if k in rows_by_key:
                     dup_rows += 1
@@ -128,7 +104,6 @@ def read_csv_dedup_first_row(
 
         col_count = len(first)
 
-        # キー指定なし → 行全体
         use_row_key = False
         key_idx0: Optional[int] = None
 
@@ -182,67 +157,81 @@ def write_list_rows(path: Path, delimiter: str, rows: List[List[Any]]) -> None:
         w.writerows(rows)
 
 
+def parse_positional_args(pos_args: List[str]) -> Tuple[str, Optional[str], str, Optional[str]]:
+    """位置引数をパースする。
+
+    2個: fileA fileB              (キーなし)
+    4個: fileA keyA fileB keyB    (キーあり)
+    """
+    n = len(pos_args)
+    if n == 2:
+        return pos_args[0], None, pos_args[1], None
+    if n == 4:
+        return pos_args[0], pos_args[1], pos_args[2], pos_args[3]
+    raise SystemExit(
+        "[ERROR] 位置引数は 2個 (fileA fileB) か 4個 (fileA keyA fileB keyB) で指定してな\n"
+        f"  受け取った数: {n}  値: {pos_args}"
+    )
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Match File A and File B and output intersection/differences")
-    ap.add_argument("--a", required=True, help="INフォルダ内のファイルA")
-    ap.add_argument("--b", required=True, help="INフォルダ内のファイルB")
-
-    ap.add_argument("--header-a", choices=["yes", "no"], default="yes", help="Aのヘッダ有無（default=yes）")
-    ap.add_argument("--header-b", choices=["yes", "no"], default="yes", help="Bのヘッダ有無（default=yes）")
-
-    ap.add_argument("--key-a", help="A（header=yes）のキー列名（省略時は1列ならその列、複数列なら行全体）")
-    ap.add_argument("--key-b", help="B（header=yes）のキー列名（省略時は1列ならその列、複数列なら行全体）")
-
-    ap.add_argument("--key-index-a", type=int, help="A（header=no）のキー列番号（省略時は1列なら1、複数列なら行全体）")
-    ap.add_argument("--key-index-b", type=int, help="B（header=no）のキー列番号（省略時は1列なら1、複数列なら行全体）")
-
+    ap = argparse.ArgumentParser(
+        description="2つのファイルを突合して共通/差分を出力する",
+        usage="%(prog)s fileA [keyA] fileB [keyB] [options]",
+    )
+    ap.add_argument(
+        "args", nargs="*", metavar="ARG",
+        help="fileA [keyA] fileB [keyB] — 2個ならキーなし突合、4個ならキー指定突合",
+    )
+    ap.add_argument("--header-a", choices=["yes", "no"], default="yes",
+                     help="Aのヘッダ有無（default=yes）")
+    ap.add_argument("--header-b", choices=["yes", "no"], default="yes",
+                     help="Bのヘッダ有無（default=yes）")
+    ap.add_argument("--key-a",
+                     help="A（header=yes）のキー列名（位置引数keyAで上書き可）")
+    ap.add_argument("--key-b",
+                     help="B（header=yes）のキー列名（位置引数keyBで上書き可）")
+    ap.add_argument("--key-index-a", type=int,
+                     help="A（header=no）のキー列番号（1始まり）")
+    ap.add_argument("--key-index-b", type=int,
+                     help="B（header=no）のキー列番号（1始まり）")
     ap.add_argument("--delimiter-a", choices=["auto", "tab", "comma", "semicolon"], default="auto")
     ap.add_argument("--delimiter-b", choices=["auto", "tab", "comma", "semicolon"], default="auto")
     args = ap.parse_args()
 
-    prog_name = "ab_match"
-    base_dir = Path(__file__).parent
-    in_dir = base_dir / "IN"
-    out_root = base_dir / "OUT"
+    if not args.args:
+        ap.print_help()
+        raise SystemExit(1)
 
-    file_a = in_dir / args.a
-    file_b = in_dir / args.b
-    if not file_a.exists():
-        raise SystemExit(f"[ERROR] not found: {file_a}")
-    if not file_b.exists():
-        raise SystemExit(f"[ERROR] not found: {file_b}")
+    file_a_arg, pos_key_a, file_b_arg, pos_key_b = parse_positional_args(args.args)
 
-    if args.delimiter_a == "auto":
-        delim_a = sniff_delimiter(file_a)
-    elif args.delimiter_a == "tab":
-        delim_a = "\t"
-    elif args.delimiter_a == "comma":
-        delim_a = ","
-    else:
-        delim_a = ";"
+    # 位置引数のキーが --key-a/--key-b より優先
+    key_a = pos_key_a if pos_key_a is not None else args.key_a
+    key_b = pos_key_b if pos_key_b is not None else args.key_b
 
-    if args.delimiter_b == "auto":
-        delim_b = sniff_delimiter(file_b)
-    elif args.delimiter_b == "tab":
-        delim_b = "\t"
-    elif args.delimiter_b == "comma":
-        delim_b = ","
-    else:
-        delim_b = ";"
+    # ファイル解決
+    file_a = resolve_input_file(file_a_arg)
+    file_b = resolve_input_file(file_b_arg)
 
-    ts = jst_timestamp()
-    out_dir = out_root / f"{ts}_{prog_name}"
-    out_dir.mkdir(parents=True, exist_ok=False)
+    # デリミタ解決
+    delim_a = resolve_delimiter(args.delimiter_a, file_a)
+    delim_b = resolve_delimiter(args.delimiter_b, file_b)
+
+    # 出力ディレクトリ
+    out_dir = setup_output_dir("ab_match")
+
+    # 入力ファイルコピー
+    copy_input_files(out_dir, file_a, file_b)
 
     header_a = (args.header_a == "yes")
     header_b = (args.header_b == "yes")
 
     try:
         a_fields, a_map, a_total, a_dups, a_key_mode = read_csv_dedup_first_row(
-            file_a, delim_a, header_a, args.key_a, args.key_index_a
+            file_a, delim_a, header_a, key_a, args.key_index_a
         )
         b_fields, b_map, b_total, b_dups, b_key_mode = read_csv_dedup_first_row(
-            file_b, delim_b, header_b, args.key_b, args.key_index_b
+            file_b, delim_b, header_b, key_b, args.key_index_b
         )
     except ValueError as e:
         raise SystemExit(f"[ERROR] {e}")
@@ -254,13 +243,13 @@ def main():
     only_a_keys = sorted(keys_a - keys_b)
     only_b_keys = sorted(keys_b - keys_a)
 
-    a_stem = sanitize_stem(Path(args.a).stem)
-    b_stem = sanitize_stem(Path(args.b).stem)
+    a_stem = sanitize_stem(file_a.stem)
+    b_stem = sanitize_stem(file_b.stem)
 
     out_in_both = out_dir / f"in_both_{len(in_both_keys)}.csv"
     out_only_a = out_dir / f"only_a_{a_stem}_{len(only_a_keys)}.csv"
     out_only_b = out_dir / f"only_b_{b_stem}_{len(only_b_keys)}.csv"
-    summary = out_dir / "summary.txt"
+    summary_path = out_dir / "summary.txt"
 
     # in_both / only_a は A側の行を出す
     if header_a:
@@ -284,8 +273,9 @@ def main():
         only_b_rows = [b_map[k] for k in only_b_keys]
         write_list_rows(out_only_b, delim_b, only_b_rows)  # type: ignore[arg-type]
 
-    delim_a_label = "TAB" if delim_a == "\t" else delim_a
-    delim_b_label = "TAB" if delim_b == "\t" else delim_b
+    ts = jst_timestamp()
+    delim_a_lbl = delimiter_label(delim_a)
+    delim_b_lbl = delimiter_label(delim_b)
 
     summary_text = "\n".join([
         f"time(JST)={ts}",
@@ -293,8 +283,8 @@ def main():
         f"file_B={file_b.name}",
         f"header_A={header_a}",
         f"header_B={header_b}",
-        f"delimiter_A={delim_a_label}",
-        f"delimiter_B={delim_b_label}",
+        f"delimiter_A={delim_a_lbl}",
+        f"delimiter_B={delim_b_lbl}",
         f"key_A_mode={a_key_mode}",
         f"key_B_mode={b_key_mode}",
         f"A_total_rows={a_total}",
@@ -309,10 +299,10 @@ def main():
         f"  {out_in_both}",
         f"  {out_only_a}",
         f"  {out_only_b}",
-        f"  {summary}",
+        f"  {summary_path}",
     ]) + "\n"
 
-    summary.write_text(summary_text, encoding="utf-8")
+    summary_path.write_text(summary_text, encoding="utf-8")
     print(summary_text, end="")
 
 

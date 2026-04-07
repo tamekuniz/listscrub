@@ -1,32 +1,18 @@
 #!/usr/bin/env python3
 import argparse
-from pathlib import Path
-from datetime import datetime, timezone, timedelta
 
-
-def jst_timestamp() -> str:
-    jst = timezone(timedelta(hours=9))
-    return datetime.now(jst).strftime("%Y-%m-%d_%H-%M-%S")
+from common import jst_timestamp, resolve_input_file, setup_output_dir, copy_input_files
 
 
 def main():
     ap = argparse.ArgumentParser(description="Split lines by exclude string (no dedup)")
-    ap.add_argument("--file", required=True, help="INフォルダ内のファイル名（改行区切り）")
-    ap.add_argument("--exclude", required=True, help="この文字列を含む行を excluded に分離")
+    ap.add_argument("file", help="対象ファイル（IN/ 内 or フルパス）")
+    ap.add_argument("exclude", help="この文字列を含む行を excluded に分離")
     args = ap.parse_args()
 
-    prog_name = "filter_lines"
-    base_dir = Path(__file__).parent
-    in_dir = base_dir / "IN"
-    out_root = base_dir / "OUT"
-
-    src = in_dir / args.file
-    if not src.exists():
-        raise SystemExit(f"[ERROR] not found: {src}")
-
-    ts = jst_timestamp()
-    out_dir = out_root / f"{ts}_{prog_name}"
-    out_dir.mkdir(parents=True, exist_ok=False)
+    src = resolve_input_file(args.file)
+    out_dir = setup_output_dir("filter_lines")
+    ts = out_dir.name.split("_filter_lines")[0]
 
     kept = []
     excluded = []
@@ -68,6 +54,8 @@ def main():
 
     summary.write_text(summary_text, encoding="utf-8")
     print(summary_text, end="")
+
+    copy_input_files(out_dir, src)
 
 
 if __name__ == "__main__":

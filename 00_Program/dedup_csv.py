@@ -1,74 +1,53 @@
 #!/usr/bin/env python3
+"""CSV/TSV または行ベーステキストの重複排除"""
 import argparse
 import csv
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import List
 
-
-def jst_timestamp() -> str:
-    jst = timezone(timedelta(hours=9))
-    return datetime.now(jst).strftime("%Y-%m-%d_%H-%M-%S")
-
-
-def sniff_delimiter(path: Path) -> str:
-    sample = path.read_bytes()[:8192].decode("utf-8-sig", errors="replace")
-    candidates = ["\t", ",", ";"]
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=candidates)
-        return dialect.delimiter
-    except Exception:
-        return "\t"
-
-
-def norm_key(s: Optional[str]) -> str:
-    if s is None:
-        return ""
-    return s.strip().strip('"').strip("'").lower()
+from common import (
+    jst_timestamp,
+    norm_key,
+    resolve_delimiter,
+    delimiter_label,
+    resolve_input_file,
+    setup_output_dir,
+    copy_input_files,
+)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Deduplicate CSV/TSV or line-based text and export kept/dropped")
-    ap.add_argument("--file", required=True, help="INフォルダ内のファイル")
-    ap.add_argument(
-        "--line",
-        action="store_true",
-        help="改行区切りリスト（1行=1レコード）として扱う（.txt向け）",
+    ap = argparse.ArgumentParser(
+        description="Deduplicate CSV/TSV or line-based text and export kept/dropped",
     )
-    ap.add_argument(
-        "--header",
-        choices=["yes", "no"],
-        default="no",
-        help="（CSV/TSV用）ヘッダ有無（default=no）",
-    )
-    ap.add_argument("--key", help="（header=yes）キー列名（1列なら省略可）")
-    ap.add_argument("--key-index", type=int, help="（header=no）キー列番号（1始まり、1列なら省略可）")
-    ap.add_argument(
-        "--delimiter",
-        choices=["auto", "tab", "comma", "semicolon"],
-        default="auto",
-        help="（CSV/TSV用）区切り文字",
-    )
+    ap.add_argument("args", nargs="+", help="file [keyColumn]")
+    ap.add_argument("--line", action="store_true", help="改行区切りリストとして扱う")
+    ap.add_argument("--header", choices=["yes", "no"], default="no", help="ヘッダ有無（default=no）")
+    ap.add_argument("--key", help="（header=yes）キー列名")
+    ap.add_argument("--key-index", type=int, help="（header=no）キー列番号（1始まり）")
+    ap.add_argument("--delimiter", choices=["auto", "tab", "comma", "semicolon"], default="auto")
     args = ap.parse_args()
 
-    prog_name = "dedup_csv"
-    base_dir = Path(__file__).parent
-    in_dir = base_dir / "IN"
-    out_root = base_dir / "OUT"
+    # --- positional args ---
+    file_arg = args.args[0]
+    positional_key = args.args[1] if len(args.args) >= 2 else None
 
-    src = in_dir / args.file
-    if not src.exists():
-        raise SystemExit(f"[ERROR] not found: {src}")
+    # positional key implies --header yes and --key
+    if positional_key is not None:
+        args.header = "yes"
+        args.key = positional_key
 
+    # --- resolve input / output ---
+    src = resolve_input_file(file_arg)
+    out_dir = setup_output_dir("dedup_csv")
     ts = jst_timestamp()
-    out_dir = out_root / f"{ts}_{prog_name}"
-    out_dir.mkdir(parents=True, exist_ok=False)
 
     kept_blank_key_rows = 0
     total_data_rows = 0
     dropped_duplicates = 0
     unique_keys = 0
 
+    # ========== LINE MODE ==========
     if args.line:
         seen = set()
         kept_lines: List[str] = []
@@ -119,18 +98,13 @@ def main():
         ]) + "\n"
 
         summary.write_text(summary_text, encoding="utf-8")
+        copy_input_files(out_dir, src)
         print(summary_text, end="")
         return
 
-    if args.delimiter == "auto":
-        delim = sniff_delimiter(src)
-    elif args.delimiter == "tab":
-        delim = "\t"
-    elif args.delimiter == "comma":
-        delim = ","
-    else:
-        delim = ";"
-    delim_label = "TAB" if delim == "\t" else delim
+    # ========== CSV MODE ==========
+    delim = resolve_delimiter(args.delimiter, src)
+    delim_lbl = delimiter_label(delim)
 
     header = (args.header == "yes")
     seen = set()
@@ -238,7 +212,7 @@ def main():
         f"source={src.name}",
         "mode=csv",
         f"header={header}",
-        f"delimiter={delim_label}",
+        f"delimiter={delim_lbl}",
         f"key={key_desc}",
         f"total_data_rows={total_data_rows}",
         f"unique_keys={unique_keys}",
@@ -253,6 +227,7 @@ def main():
     ]) + "\n"
 
     summary.write_text(summary_text, encoding="utf-8")
+    copy_input_files(out_dir, src)
     print(summary_text, end="")
 
 
