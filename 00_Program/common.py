@@ -1,38 +1,28 @@
-#!/usr/bin/env python3
-"""BENRI ツール共通ユーティリティ"""
-import csv
-import re
+"""listscrub CLI 用共通ユーティリティ
+
+メモリベース純粋関数（jst_timestamp, sanitize_stem, norm_key, delimiter_label 等）は
+core/common.py を正本とし、ここでは re-export して CLI から直接 import できるようにする。
+
+このモジュール本体が持つのは「ファイル/ディレクトリを扱う I/O 系関数」のみ。
+"""
+from __future__ import annotations
+
 import shutil
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import Any, Dict
 
-
-def jst_timestamp() -> str:
-    jst = timezone(timedelta(hours=9))
-    return datetime.now(jst).strftime("%Y-%m-%d_%H-%M-%S")
-
-
-def sanitize_stem(name: str) -> str:
-    name = name.strip().replace(" ", "_")
-    name = re.sub(r"[^\w\.\-\+]+", "", name)
-    name = name.strip("._-")
-    return name or "file"
+from core.common import (
+    delimiter_label,
+    jst_timestamp,
+    norm_key,
+    resolve_delimiter_for_bytes,
+    sanitize_stem,
+    sniff_delimiter_from_bytes,
+)
 
 
 def sniff_delimiter(path: Path) -> str:
-    sample = path.read_bytes()[:8192].decode("utf-8-sig", errors="replace")
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=["\t", ",", ";"])
-        return dialect.delimiter
-    except Exception:
-        return ","
-
-
-def norm_key(s: Optional[str]) -> str:
-    if s is None:
-        return ""
-    return s.strip().strip('"').strip("'").lower()
+    return sniff_delimiter_from_bytes(path.read_bytes())
 
 
 def resolve_delimiter(arg_value: str, path: Path) -> str:
@@ -41,19 +31,12 @@ def resolve_delimiter(arg_value: str, path: Path) -> str:
     return {"tab": "\t", "comma": ",", "semicolon": ";"}[arg_value]
 
 
-def delimiter_label(delim: str) -> str:
-    return "TAB" if delim == "\t" else delim
-
-
 def base_dir() -> Path:
     return Path(__file__).parent.parent
 
 
 def resolve_input_file(arg: str) -> Path:
-    """ファイルパスを解決する。
-    - フルパス or 相対パスが存在すればそのまま使う
-    - なければ IN/ フォルダから探す（従来互換）
-    """
+    """ファイルパスを解決する（フルパス or 相対パス → 無ければ IN/ 配下を探す）。"""
     p = Path(arg)
     if p.exists():
         return p.resolve()
@@ -75,3 +58,40 @@ def copy_input_files(out_dir: Path, *paths: Path) -> None:
     input_dir.mkdir(exist_ok=True)
     for p in paths:
         shutil.copy2(p, input_dir / p.name)
+
+
+def write_outputs_and_summary(
+    out_dir: Path, files: Dict[str, bytes], summary: Dict[str, Any]
+) -> None:
+    """core 関数の戻り値（files dict, summary dict）を OUT/ に書き出し、
+    summary.txt をフルパス版に整形して上書きする。
+
+    4 つの CLI ラッパー（ab_match / dedup_csv / filter_lines / reorder_columns）から共用。
+    """
+    paths: Dict[str, Path] = {}
+    for name, content in files.items():
+        if name == "summary.txt":
+            continue
+        p = out_dir / name
+        p.write_bytes(content)
+        paths[name] = p
+
+    summary_path = out_dir / "summary.txt"
+    lines = []
+    for k, v in summary.items():
+        if k == "_outputs":
+            continue
+        if k.startswith("warning_"):
+            lines.append(f"warning={v}")
+            continue
+        lines.append(f"{k}={v}")
+    lines.append("")
+    lines.append("outputs:")
+    for name in summary["_outputs"]:
+        if name == "summary.txt":
+            lines.append(f"  {summary_path}")
+        else:
+            lines.append(f"  {paths[name]}")
+    text = "\n".join(lines) + "\n"
+    summary_path.write_text(text, encoding="utf-8")
+    print(text, end="")
